@@ -18,6 +18,20 @@ final class OGMDebugMapView: UIView {
         let positionXZ: simd_float2
     }
 
+    /// 経路計画の描画内容
+    struct PlanOverlay {
+        /// A*が返した経路。観測済みセルのみを通るので確定区間として実線で描く。
+        var path: [simd_float3] = []
+        /// フロンティア目的地（観測済み領域の縁）
+        var goal: simd_float3?
+        /// タップで指定した最終目標。goalからここまではまだ観測できていないので
+        /// 暫定区間として破線で描き分ける。
+        var target: simd_float3?
+    }
+
+    /// 地図上をタップしたとき、その位置のワールド座標(X,Z)を通知する
+    var onTapWorldPosition: ((simd_float2) -> Void)?
+
     /// 1メートルが何ポイントに相当するか（大きいほどズームイン）
     var pointsPerMeter: CGFloat = 40
 
@@ -37,6 +51,7 @@ final class OGMDebugMapView: UIView {
     private var cellSize: Float = OGMConfig.cellSize
     private var cameraPose: CameraPose?
     private var rawPoints: [ClassifiedPoint] = []
+    private var plan = PlanOverlay()
 
     /// 自己位置を画面のどこに置くか。カメラ追従時は前方を広く見せたいので下寄りにする。
     private var anchorFraction: CGPoint {
@@ -56,20 +71,32 @@ final class OGMDebugMapView: UIView {
     private func commonInit() {
         backgroundColor = Self.unknownColor
         isOpaque = true
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleRotationMode)))
+        // タップは目標指定に使うので、表示モードの切替は長押しへ移した
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
+        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:))))
         isUserInteractionEnabled = true
     }
 
-    @objc private func toggleRotationMode() {
+    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        guard let pose = cameraPose else { return }
+        let anchorFraction = self.anchorFraction
+        let anchor = CGPoint(x: bounds.width * anchorFraction.x, y: bounds.height * anchorFraction.y)
+        let worldXZ = screenToWorld(recognizer.location(in: self), anchor: anchor, pose: pose)
+        onTapWorldPosition?(worldXZ)
+    }
+
+    @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
         rotatesWithCamera.toggle()
     }
 
     func update(cells: [GridCoordinate: CellState], cellSize: Float, cameraPose: CameraPose,
-                rawPoints: [ClassifiedPoint] = []) {
+                rawPoints: [ClassifiedPoint] = [], plan: PlanOverlay = PlanOverlay()) {
         self.cellSnapshot = cells
         self.cellSize = cellSize
         self.cameraPose = cameraPose
         self.rawPoints = rawPoints
+        self.plan = plan
         setNeedsDisplay()
     }
 
@@ -95,6 +122,15 @@ final class OGMDebugMapView: UIView {
         let rightComponent = simd_dot(relative, basisRight(for: pose))     // 右方向距離
         return CGPoint(x: anchor.x + CGFloat(rightComponent) * pointsPerMeter,
                         y: anchor.y - CGFloat(forwardComponent) * pointsPerMeter)
+    }
+
+    /// worldToScreen の逆変換。タップ位置と、描画範囲の算出に使う。
+    private func screenToWorld(_ point: CGPoint, anchor: CGPoint, pose: CameraPose) -> simd_float2 {
+        let rightComponent = Float((point.x - anchor.x) / pointsPerMeter)
+        let forwardComponent = Float((anchor.y - point.y) / pointsPerMeter)
+        return pose.positionXZ
+            + basisForward(for: pose) * forwardComponent
+            + basisRight(for: pose) * rightComponent
     }
 
     // MARK: - 描画
@@ -128,6 +164,7 @@ final class OGMDebugMapView: UIView {
             drawRawPoints(in: ctx, anchor: anchor, visibleRect: visibleRect, pose: pose)
         }
 
+        drawPlan(in: ctx, anchor: anchor, pose: pose)
         drawSelfMarker(in: ctx, at: anchor, pose: pose)
         drawScaleBar(in: ctx, rect: rect)
     }
@@ -148,6 +185,59 @@ final class OGMDebugMapView: UIView {
         }
     }
 
+    /// A*の経路（実線）と、目的地から最終目標までの未観測区間（破線）を描く。
+    private func drawPlan(in ctx: CGContext, anchor: CGPoint, pose: CameraPose) {
+        func screenPoint(_ world: simd_float3) -> CGPoint {
+            worldToScreen(simd_float2(world.x, world.z), anchor: anchor, pose: pose)
+        }
+
+        // 確定区間：観測済みセルだけを通るA*の経路
+        if plan.path.count >= 2 {
+            ctx.setStrokeColor(UIColor.systemYellow.cgColor)
+            ctx.setLineWidth(3)
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            ctx.setLineDash(phase: 0, lengths: [])
+            ctx.move(to: screenPoint(plan.path[0]))
+            for waypoint in plan.path.dropFirst() {
+                ctx.addLine(to: screenPoint(waypoint))
+            }
+            ctx.strokePath()
+        }
+
+        // 暫定区間：フロンティア目的地から先はまだ観測できていないので破線
+        if let goal = plan.goal, let target = plan.target {
+            ctx.setStrokeColor(UIColor.systemPurple.cgColor)
+            ctx.setLineWidth(2)
+            ctx.setLineDash(phase: 0, lengths: [6, 4])
+            ctx.move(to: screenPoint(goal))
+            ctx.addLine(to: screenPoint(target))
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
+        }
+
+        if let goal = plan.goal {
+            let point = screenPoint(goal)
+            ctx.setFillColor(UIColor.systemYellow.cgColor)
+            ctx.fillEllipse(in: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
+            ctx.setStrokeColor(UIColor.black.cgColor)
+            ctx.setLineWidth(1)
+            ctx.strokeEllipse(in: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
+        }
+
+        // タップで指定した最終目標
+        if let target = plan.target {
+            let point = screenPoint(target)
+            ctx.setStrokeColor(UIColor.systemPurple.cgColor)
+            ctx.setLineWidth(3)
+            ctx.move(to: CGPoint(x: point.x - 7, y: point.y - 7))
+            ctx.addLine(to: CGPoint(x: point.x + 7, y: point.y + 7))
+            ctx.move(to: CGPoint(x: point.x + 7, y: point.y - 7))
+            ctx.addLine(to: CGPoint(x: point.x - 7, y: point.y + 7))
+            ctx.strokePath()
+        }
+    }
+
     private func rawPointColor(for walkability: Walkability) -> UIColor {
         switch walkability {
         case .nonWalkable: return .systemRed
@@ -164,8 +254,6 @@ final class OGMDebugMapView: UIView {
     private func gridRange(for visibleRect: CGRect, anchor: CGPoint, pose: CameraPose) -> GridRange? {
         guard pointsPerMeter > 0, cellSize > 0 else { return nil }
 
-        let forward = basisForward(for: pose)
-        let right = basisRight(for: pose)
         let corners = [
             CGPoint(x: visibleRect.minX, y: visibleRect.minY),
             CGPoint(x: visibleRect.maxX, y: visibleRect.minY),
@@ -177,9 +265,7 @@ final class OGMDebugMapView: UIView {
         var minWorldZ = Float.greatestFiniteMagnitude, maxWorldZ = -Float.greatestFiniteMagnitude
 
         for corner in corners {
-            let rightComponent = Float((corner.x - anchor.x) / pointsPerMeter)
-            let forwardComponent = Float((anchor.y - corner.y) / pointsPerMeter)
-            let world = pose.positionXZ + forward * forwardComponent + right * rightComponent
+            let world = screenToWorld(corner, anchor: anchor, pose: pose)
             minWorldX = min(minWorldX, world.x)
             maxWorldX = max(maxWorldX, world.x)
             minWorldZ = min(minWorldZ, world.y)
@@ -237,7 +323,8 @@ final class OGMDebugMapView: UIView {
         ctx.addLine(to: CGPoint(x: origin.x + barLength, y: origin.y))
         ctx.strokePath()
 
-        let modeLabel = (rotatesWithCamera ? "1m  [進行方向が上] タップで切替" : "1m  [北が上] タップで切替") as NSString
+        let modeLabel = (rotatesWithCamera ? "1m  [進行方向が上] タップ=目標 長押し=切替"
+                                           : "1m  [北が上] タップ=目標 長押し=切替") as NSString
         modeLabel.draw(at: CGPoint(x: origin.x, y: origin.y - 16),
                        withAttributes: [.font: UIFont.boldSystemFont(ofSize: 11), .foregroundColor: UIColor.systemBlue])
     }

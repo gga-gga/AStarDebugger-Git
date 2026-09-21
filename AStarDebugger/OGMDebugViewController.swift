@@ -18,6 +18,10 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
     private var lastMapRefreshTime: TimeInterval = 0
     private let mapRefreshInterval: TimeInterval = 0.2 // 表示は5Hzで十分
 
+    /// 地図タップで指定した目標（座席に相当）。指定されている間は毎回再計画する。
+    private var targetWorldPosition: simd_float3?
+    private var lastPlanningStatus = "path: no target"
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -57,6 +61,10 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
     private func setupMapView() {
         mapView.frame = CGRect(x: 0, y: view.bounds.height / 2, width: view.bounds.width, height: view.bounds.height / 2)
         mapView.autoresizingMask = [.flexibleWidth, .flexibleTopMargin, .flexibleHeight]
+        mapView.onTapWorldPosition = { [weak self] worldXZ in
+            // 高さは経路計画では使わないので0で良い（床面はエンジン側が持っている）
+            self?.targetWorldPosition = simd_float3(worldXZ.x, 0, worldXZ.y)
+        }
         view.addSubview(mapView)
     }
 
@@ -91,13 +99,38 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
         let cells = ogmEngine.grid.cells
         let cellSize = ogmEngine.grid.cellSize
         let rawPoints = ogmEngine.lastClassifiedPoints
+        let plan = replanIfNeeded(frame: frame)
         let statsText = self.statsText(cells: cells, rawPoints: rawPoints, pose: pose)
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.mapView.update(cells: cells, cellSize: cellSize, cameraPose: pose, rawPoints: rawPoints)
+            self.mapView.update(cells: cells, cellSize: cellSize, cameraPose: pose,
+                                rawPoints: rawPoints, plan: plan)
             self.statsLabel.text = statsText
         }
+    }
+
+    /// 目標が指定されていれば毎回（5Hz）計画し直す。地図が広がるにつれて経路が
+    /// どう伸びるかを見たいので、まずは「半分歩いたら再計画」ではなく常時更新する。
+    private func replanIfNeeded(frame: ARFrame) -> OGMDebugMapView.PlanOverlay {
+        guard let target = targetWorldPosition else {
+            lastPlanningStatus = "path: no target (地図をタップ)"
+            return OGMDebugMapView.PlanOverlay()
+        }
+
+        let m = frame.camera.transform
+        let currentPosition = simd_float3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
+        let result = ogmEngine.planPath(from: currentPosition, toward: target)
+        lastPlanningStatus = result.debugDescription
+
+        var overlay = OGMDebugMapView.PlanOverlay()
+        overlay.target = target
+        if case .success(let path, let goal) = result {
+            overlay.path = path
+            let goalCenter = ogmEngine.grid.worldCenter(of: goal)
+            overlay.goal = simd_float3(goalCenter.x, 0, goalCenter.z)
+        }
+        return overlay
     }
 
     /// カメラの水平（Yaw）成分だけを取り出す。ロール/ピッチは無視する。
@@ -141,12 +174,13 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
         }
 
         return """
-        OGM Debug
+        A* Debug
         observed cells: \(cells.count)
         occupied: \(occupiedCount)
         free: \(freeCount)
         raw pts: \(rawPoints.count) (walkable:\(walkablePts) nonWalkable:\(nonWalkablePts))
         \(debugLine)
+        \(lastPlanningStatus)
         """
     }
 }

@@ -4,7 +4,7 @@
 //
 //  呼び出し側（ViewController等）は `update(frame:timestamp:)` を
 //  OGMConfig.depthCaptureInterval 相当の間隔（目標10fps）で呼び出し、
-//  空席が定まったら `planPath(from:toSeatAt:)` で経路を取得する。
+//  目標が決まったら `planPath(from:toward:)` で経路を取得する。
 //
 
 import ARKit
@@ -42,28 +42,51 @@ final class OGMNavigationEngine {
         grid.integrate(classifiedPoints: classified)
     }
 
-    /// [7]〜[8]：空席のワールド座標を目的地として、通路側セルまでのA*経路を計画する。
-    /// - Parameter aisleDirection: 座席→通路方向のヒント（水平面）。分かる場合に渡すと目的地選定の精度が上がる。
+    /// 経路計画の結果。デバッグ表示のため、失敗時もどの段階で止まったかを返す。
+    enum PlanningResult {
+        case success(path: [simd_float3], goal: GridCoordinate)
+        /// 床面が未推定。観測がまだ足りない。
+        case noFloorEstimate
+        /// 現在地から到達できる観測済みセルが無い（足元も周囲も未観測など）。
+        case noReachableArea
+        /// 目的地は決まったがA*が経路を見つけられなかった。
+        /// 到達可能性を確認した上で選んだ目的地なので、本来ここには来ないはず。
+        case noPath(goal: GridCoordinate)
+
+        var debugDescription: String {
+            switch self {
+            case .success(let path, _): return "path: \(path.count) cells"
+            case .noFloorEstimate: return "path: no floor estimate"
+            case .noReachableArea: return "path: no reachable area"
+            case .noPath: return "path: goal found but unreachable"
+            }
+        }
+    }
+
+    /// [7]〜[8]：目標（座席など）へ向かう経路を計画する。
+    /// 目標がまだ観測範囲外でも、到達可能な観測済みセルのうち目標に最も近いもの
+    /// （フロンティア）を目的地にするため、経路は出る。
     @discardableResult
-    func planPath(from currentPosition: simd_float3,
-                  toSeatAt seatWorldPosition: simd_float3,
-                  aisleDirection: simd_float3? = nil) -> [simd_float3]? {
-        guard let floorY else { return nil }
+    func planPath(from currentPosition: simd_float3, toward target: simd_float3) -> PlanningResult {
+        guard let floorY else { return .noFloorEstimate }
 
         let costMap = CostMapGenerator(grid: grid).generateCostMap(occupiedCoordinates: grid.cells)
-        // 目的地選択とA*で通行可否の判定を共有する（ズレると経路だけ出ない失敗になる）
-        let traversability = TraversabilityPolicy(grid: grid, costMap: costMap)
+        let startCoord = grid.coordinate(forWorld: currentPosition)
+        // 目的地選択とA*で通行可否の判定を共有する（ズレると経路だけ出ない失敗になる）。
+        // 足元は未観測になりやすいので、現在地だけは通行可能とみなす。
+        let traversability = TraversabilityPolicy(grid: grid,
+                                                   costMap: costMap,
+                                                   assumedTraversable: [startCoord])
 
-        let resolver = SeatTargetResolver(grid: grid, traversability: traversability)
-        guard let destination = resolver.resolveDestination(seatWorldPosition: seatWorldPosition,
-                                                              preferredDirection: aisleDirection) else {
-            return nil
+        let selector = FrontierGoalSelector(grid: grid, traversability: traversability)
+        guard let goal = selector.selectGoal(from: startCoord, towards: target) else {
+            return .noReachableArea
         }
 
         let planner = AStarPathPlanner(costMap: costMap, isTraversable: traversability.isTraversable)
-
-        let startCoord = grid.coordinate(forWorld: currentPosition)
-        guard let cellPath = planner.findPath(from: startCoord, to: destination) else { return nil }
+        guard let cellPath = planner.findPath(from: startCoord, to: goal) else {
+            return .noPath(goal: goal)
+        }
 
         let worldPath = cellPath.map { coord -> simd_float3 in
             let center = grid.worldCenter(of: coord)
@@ -71,7 +94,7 @@ final class OGMNavigationEngine {
         }
         currentPath = worldPath
         pathStartPosition = currentPosition
-        return worldPath
+        return .success(path: worldPath, goal: goal)
     }
 
     /// 計画済み経路の半分を歩いたら再計画する（7章の初期方針）
