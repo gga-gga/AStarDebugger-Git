@@ -10,7 +10,7 @@ import simd
 
 struct SeatTargetResolver {
     let grid: OccupancyGridMap
-    let costMap: [GridCoordinate: CostCell]
+    let traversability: TraversabilityPolicy
 
     /// - Parameters:
     ///   - seatWorldPosition: 空席検出で得られたワールド座標（座面付近）
@@ -26,7 +26,7 @@ struct SeatTargetResolver {
             for dx in -searchRadiusCells...searchRadiusCells {
                 guard dx != 0 || dz != 0 else { continue }
                 let coord = GridCoordinate(x: seatCell.x + dx, z: seatCell.z + dz)
-                guard isFreeAndTraversable(coord) else { continue }
+                guard traversability.isTraversable(coord) else { continue }
 
                 let cellsAway = Float(max(abs(dx), abs(dz)))
                 var score = cellsAway // 近いほど良い（スコアが小さいほど優先）
@@ -46,11 +46,5 @@ struct SeatTargetResolver {
             }
         }
         return best?.coord
-    }
-
-    private func isFreeAndTraversable(_ coord: GridCoordinate) -> Bool {
-        if costMap[coord]?.isBlocked == true { return false }
-        if let state = grid.state(at: coord), state.isOccupied { return false }
-        return true
     }
 }

@@ -7,7 +7,6 @@ import Foundation
 
 final class AStarPathPlanner {
     private let costMap: [GridCoordinate: CostCell]
-    private let cellSize: Float
     private let isTraversable: (GridCoordinate) -> Bool
 
     private static let neighborOffsets: [(dx: Int, dz: Int)] = [
@@ -15,9 +14,8 @@ final class AStarPathPlanner {
         (1, 1), (1, -1), (-1, 1), (-1, -1)
     ]
 
-    init(costMap: [GridCoordinate: CostCell], cellSize: Float, isTraversable: @escaping (GridCoordinate) -> Bool) {
+    init(costMap: [GridCoordinate: CostCell], isTraversable: @escaping (GridCoordinate) -> Bool) {
         self.costMap = costMap
-        self.cellSize = cellSize
         self.isTraversable = isTraversable
     }
 
@@ -44,9 +42,12 @@ final class AStarPathPlanner {
                 let neighbor = GridCoordinate(x: current.x + offset.dx, z: current.z + offset.dz)
                 guard isTraversable(neighbor) else { continue }
 
+                // 移動コストはセル数で数える（メートルではない）。
+                // メートル(1セル0.15)だと障害物コスト(最大β=50)と桁が合わず、
+                // 障害物の隣を1セル通ることが333セル分の遠回りと同じ重みになってしまい、
+                // 論文のα=3・β=50が意図した比率で効かない。
                 let isDiagonal = offset.dx != 0 && offset.dz != 0
-                let stepDistance: Float = isDiagonal ? Float(2).squareRoot() : 1
-                let travelCost = stepDistance * cellSize
+                let travelCost: Float = isDiagonal ? Float(2).squareRoot() : 1
                 let obstacleCost = costMap[neighbor]?.baseCost ?? 0
                 let tentativeG = (gScore[current] ?? .infinity) + travelCost + obstacleCost
 
@@ -61,9 +62,11 @@ final class AStarPathPlanner {
         return nil
     }
 
+    /// 残りセル数のユークリッド距離。移動コストと同じ「セル数」単位に揃えてあり、
+    /// 障害物コストは常に0以上なので、実コストを上回らない（許容的）。
     private func heuristic(_ a: GridCoordinate, _ b: GridCoordinate) -> Float {
         let dx = Float(a.x - b.x), dz = Float(a.z - b.z)
-        return (dx * dx + dz * dz).squareRoot() * cellSize
+        return (dx * dx + dz * dz).squareRoot()
     }
 
     private func reconstructPath(cameFrom: [GridCoordinate: GridCoordinate], current: GridCoordinate) -> [GridCoordinate] {
