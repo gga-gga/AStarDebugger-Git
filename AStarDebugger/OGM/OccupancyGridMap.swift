@@ -29,20 +29,19 @@ final class OccupancyGridMap {
         cells[coord]
     }
 
-    /// 各点が投影されるセルに、walkable/non-walkableの票を1つ入れる。
+    /// 各点が投影されるセルのスコアを、walkableなら+1、non-walkableなら-1する。
     /// 視野外・未観測のセルは触れられず、直近の値を保持し続ける。
-    /// 票数には上限があり（OGMConfig.maxVoteCountPerCell）、過去の観測が無制限に
+    /// スコアには上下限があり（OGMConfig.cellScoreMin/Max）、過去の観測が無制限に
     /// 積み上がって後からの訂正を不可能にしてしまうのを防ぐ。
     func integrate(classifiedPoints: [ClassifiedPoint]) {
-        let maxVotes = OGMConfig.maxVoteCountPerCell
         for point in classifiedPoints {
             let coord = coordinate(forWorld: point.worldPosition)
             var state = cells[coord] ?? CellState()
             switch point.walkability {
             case .walkable:
-                state.walkableCount = min(state.walkableCount + 1, maxVotes)
+                state.score = min(state.score + 1, OGMConfig.cellScoreMax)
             case .nonWalkable:
-                state.nonWalkableCount = min(state.nonWalkableCount + 1, maxVotes)
+                state.score = max(state.score - 1, OGMConfig.cellScoreMin)
             }
             cells[coord] = state
         }
