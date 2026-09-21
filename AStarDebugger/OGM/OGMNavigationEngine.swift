@@ -58,8 +58,14 @@ final class OGMNavigationEngine {
         }
 
         let planner = AStarPathPlanner(costMap: costMap, cellSize: grid.cellSize) { [grid] coord in
+            // 未観測セルは通行不可として扱う（保守的方式）。これにより
+            //  ・未観測の壁を突き抜ける経路を提示しない（安全）
+            //  ・探索範囲が観測済みセル（有限集合）に限定され、到達不能な目的地を
+            //    指定されたときに未観測空間へ無限展開してハングするのが構造的に消える
+            // 「経路が出ない」という保守的方式の弱点は、目的地側をフロンティア
+            //（観測済みfreeセルのうち座席に最も近いもの）に置くことで解消する。
+            guard let state = grid.state(at: coord), !state.isOccupied else { return false }
             if costMap[coord]?.isBlocked == true { return false }
-            if let state = grid.state(at: coord), state.isOccupied { return false }
             return true
         }
 

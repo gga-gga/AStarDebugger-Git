@@ -34,13 +34,21 @@ enum OGMConfig {
     // 隣接画素との深度差がこれを超える場合は、実在しない中間距離の点とみなして破棄する
     static let maxDepthDiscontinuityMeters: Float = 0.5
 
-    // 経路計画時の占有膨張マージン（5.3）
-    // 安定/不安定の区別は行わないため、安全側の値（旧unstableMarginCellsの上限）を一律採用
-    static let occupiedMarginCells: Int = 3
-
-    // コスト関数（5.3, Corridor-Walker Section 4.2準拠）
+    // コスト関数（Corridor-Walker Section 4.2.1）
+    // cost = β(1 - (δ-1)/α)  （1 ≤ δ ≤ α）、δ > α では 0。δ=障害物までのセル距離。
+    // δ=1→50, 2→33.3, 3→16.7, 4→0
     static let costAlpha: Float = 3.0
     static let costBeta: Float = 50.0
+
+    // 経路計画時の占有膨張。「通行不可にする半径」と「コストを付ける半径」は別物なので分ける。
+    // 以前は1つの値が両方を兼ねており、膨張範囲内が常に通行不可になっていたため、
+    // コスト勾配がA*に一度も届いていなかった（論文4.2.1は膨張で塞がずコストのみを付ける）。
+    //
+    // 通行不可にする半径：人体半幅相当の2セル=0.30m（仮値、車内で実測して確定）。
+    // ロングシート車の通路幅1.94mに対し、両側0.30mずつ塞いでも1.34m残る。
+    static let blockedMarginCells: Int = 2
+    // コストを付ける半径：δ > α で0になるので、αセルまで正のコストが付く。
+    static let costMarginCells: Int = Int(costAlpha)
 
     // セルの占有判定は、そのセルに直接投影されたwalkable/non-walkable点の
     // 累積カウントの多数決で確定させる（CellState.isOccupied参照）。
