@@ -170,7 +170,8 @@ final class OGMDebugMapView: UIView {
             }
         }
 
-        if showsRawPoints {
+        // コスト表示中は生の点群を描かない（赤/緑のドットがコストの色分けと重なって読めなくなるため）
+        if showsRawPoints && !showsCostMap {
             drawRawPoints(in: ctx, anchor: anchor, visibleRect: visibleRect, pose: pose)
         }
 
