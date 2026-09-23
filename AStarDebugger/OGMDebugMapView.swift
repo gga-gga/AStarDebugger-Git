@@ -43,11 +43,19 @@ final class OGMDebugMapView: UIView {
     /// 生の点群ドット表示のON/OFF（原因調査用）
     var showsRawPoints = true
 
+    /// 空きセルをA*のコスト値で色分けするか（コストマップのデバッグ用）
+    var showsCostMap = false {
+        didSet { setNeedsDisplay() }
+    }
+
     private static let occupiedColor = UIColor.black
     private static let freeColor = UIColor.white
     private static let unknownColor = UIColor.systemGray
+    /// 観測上は空きだが、膨張（blockedMarginCells）で経路計画上は通行不可にされたセル
+    private static let blockedColor = UIColor(red: 0.5, green: 0.0, blue: 0.1, alpha: 1)
 
     private var cellSnapshot: [GridCoordinate: CellState] = [:]
+    private var costMap: [GridCoordinate: CostCell] = [:]
     private var cellSize: Float = OGMConfig.cellSize
     private var cameraPose: CameraPose?
     private var rawPoints: [ClassifiedPoint] = []
@@ -91,8 +99,10 @@ final class OGMDebugMapView: UIView {
     }
 
     func update(cells: [GridCoordinate: CellState], cellSize: Float, cameraPose: CameraPose,
-                rawPoints: [ClassifiedPoint] = [], plan: PlanOverlay = PlanOverlay()) {
+                rawPoints: [ClassifiedPoint] = [], plan: PlanOverlay = PlanOverlay(),
+                costMap: [GridCoordinate: CostCell] = [:]) {
         self.cellSnapshot = cells
+        self.costMap = costMap
         self.cellSize = cellSize
         self.cameraPose = cameraPose
         self.rawPoints = rawPoints
@@ -283,7 +293,20 @@ final class OGMDebugMapView: UIView {
 
     private func color(for coord: GridCoordinate) -> UIColor {
         guard let state = cellSnapshot[coord] else { return Self.unknownColor } // 未検出
-        return state.isOccupied ? Self.occupiedColor : Self.freeColor
+        if state.isOccupied { return Self.occupiedColor }
+
+        // 未検出セルにもコストは付くが、経路計画上どのみち通行不可なので灰のまま塗らない。
+        // 色分けするのは観測済みの空きセルだけ。
+        guard showsCostMap, let cost = costMap[coord] else { return Self.freeColor }
+        if cost.isBlocked { return Self.blockedColor }
+        return Self.costColor(cost.baseCost)
+    }
+
+    /// コスト0（白）→ β（赤寄りのオレンジ）のグラデーション。
+    /// 通行不可セル（濃い赤）とは明度で区別できるようにしてある。
+    private static func costColor(_ cost: Float) -> UIColor {
+        let t = CGFloat(max(0, min(1, cost / OGMConfig.costBeta)))
+        return UIColor(red: 1, green: 1 - 0.7 * t, blue: 1 - 0.85 * t, alpha: 1)
     }
 
     /// 自己位置マーカー。カメラ追従時は地図の方が回るため、この矢印は常に真上を向く
@@ -327,5 +350,37 @@ final class OGMDebugMapView: UIView {
                                            : "1m  [北が上] タップ=目標 長押し=切替") as NSString
         modeLabel.draw(at: CGPoint(x: origin.x, y: origin.y - 16),
                        withAttributes: [.font: UIFont.boldSystemFont(ofSize: 11), .foregroundColor: UIColor.systemBlue])
+
+        if showsCostMap {
+            drawCostLegend(in: ctx, at: CGPoint(x: origin.x, y: origin.y - 40))
+        }
+    }
+
+    /// コスト表示中の凡例：通行不可の色見本と、コスト0→βのグラデーション帯
+    private func drawCostLegend(in ctx: CGContext, at origin: CGPoint) {
+        let swatch: CGFloat = 12
+        let font = UIFont.boldSystemFont(ofSize: 11)
+        var x = origin.x
+
+        Self.blockedColor.setFill()
+        ctx.fill(CGRect(x: x, y: origin.y, width: swatch, height: swatch))
+        x += swatch + 4
+        ("通行不可" as NSString).draw(at: CGPoint(x: x, y: origin.y - 1),
+                                   withAttributes: [.font: font, .foregroundColor: UIColor.white])
+        x += 60
+
+        ("コスト0" as NSString).draw(at: CGPoint(x: x, y: origin.y - 1),
+                                  withAttributes: [.font: font, .foregroundColor: UIColor.white])
+        x += 46
+        let steps = 10
+        let stepWidth: CGFloat = 6
+        for i in 0...steps {
+            let cost = OGMConfig.costBeta * Float(i) / Float(steps)
+            Self.costColor(cost).setFill()
+            ctx.fill(CGRect(x: x + CGFloat(i) * stepWidth, y: origin.y, width: stepWidth, height: swatch))
+        }
+        x += CGFloat(steps + 1) * stepWidth + 4
+        ("\(Int(OGMConfig.costBeta))" as NSString).draw(at: CGPoint(x: x, y: origin.y - 1),
+                                                          withAttributes: [.font: font, .foregroundColor: UIColor.white])
     }
 }

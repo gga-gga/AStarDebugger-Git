@@ -14,6 +14,11 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
     private let statsLabel = UILabel()
 
     private let exportButton = UIButton(type: .system)
+    private let costToggleButton = UIButton(type: .system)
+
+    /// コストマップの色分け表示。ONの間は目標の有無に関係なく毎回コストマップを計算する
+    /// （経路を引かなくても膨張・コスト勾配の形を確認できるようにするため）。
+    private var showsCostMap = false
 
     private let ogmEngine = OGMNavigationEngine()
     private var lastOGMUpdateTime: TimeInterval = 0
@@ -31,6 +36,7 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
         setupMapView()
         setupStatsLabel()
         setupExportButton()
+        setupCostToggleButton()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -102,6 +108,34 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
         ])
     }
 
+    private func setupCostToggleButton() {
+        costToggleButton.configuration = costToggleConfiguration()
+        costToggleButton.addTarget(self, action: #selector(toggleCostMap), for: .touchUpInside)
+        costToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(costToggleButton)
+        NSLayoutConstraint.activate([
+            costToggleButton.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 8),
+            costToggleButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8)
+        ])
+    }
+
+    private func costToggleConfiguration() -> UIButton.Configuration {
+        var config = UIButton.Configuration.filled()
+        config.title = showsCostMap ? "コスト表示: ON" : "コスト表示: OFF"
+        config.baseBackgroundColor = showsCostMap
+            ? UIColor.systemOrange.withAlphaComponent(0.85)
+            : UIColor.black.withAlphaComponent(0.6)
+        config.baseForegroundColor = .white
+        config.cornerStyle = .medium
+        return config
+    }
+
+    @objc private func toggleCostMap() {
+        showsCostMap.toggle()
+        mapView.showsCostMap = showsCostMap
+        costToggleButton.configuration = costToggleConfiguration()
+    }
+
     @objc private func exportOGMImage() {
         let selfPosition = sceneView.session.currentFrame.map { frame -> simd_float3 in
             let m = frame.camera.transform
@@ -146,11 +180,15 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
         let rawPoints = ogmEngine.lastClassifiedPoints
         let plan = replanIfNeeded(frame: frame)
         let statsText = self.statsText(cells: cells, rawPoints: rawPoints, pose: pose)
+        // 経路計画が内部で使うのと同じ生成器で作る。表示OFFの間は計算しない。
+        let costMap = showsCostMap
+            ? CostMapGenerator(grid: ogmEngine.grid).generateCostMap(occupiedCoordinates: cells)
+            : [:]
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.mapView.update(cells: cells, cellSize: cellSize, cameraPose: pose,
-                                rawPoints: rawPoints, plan: plan)
+                                rawPoints: rawPoints, plan: plan, costMap: costMap)
             self.statsLabel.text = statsText
         }
     }
