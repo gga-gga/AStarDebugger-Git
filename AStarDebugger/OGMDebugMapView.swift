@@ -151,9 +151,25 @@ final class OGMDebugMapView: UIView {
         let anchorFraction = self.anchorFraction
         let anchor = CGPoint(x: rect.width * anchorFraction.x, y: rect.height * anchorFraction.y)
         let visibleRect = rect.insetBy(dx: -32, dy: -32)
-        let halfCellPt = CGFloat(cellSize) * pointsPerMeter / 2
 
         guard let gridRange = gridRange(for: visibleRect, anchor: anchor, pose: pose) else { return }
+
+        // セルは地図と一緒に回転させる（先行研究と同じく、地図全体を1枚の画像として回す）。
+        // 以前は中心だけを投影して正方形は画面の縦横に沿ったまま描いていたため、
+        // 地図が回ると隣のセル同士が重なったり隙間ができたりして格子が崩れていた。
+        // 投影は線形なので、セルの半辺（ワールドの+X方向・+Z方向）を画面へ写したベクトルは
+        // 全セル共通。各セルは「中心 ± 2本の半辺ベクトル」の四角形として描く。
+        // ワールド固定モードでは基底が(1,0)/(0,-1)なので、従来と同じ軸に沿った正方形になる。
+        let halfCellMeters = cellSize / 2
+        let right = basisRight(for: pose)
+        let forward = basisForward(for: pose)
+        // アンチエイリアスで隣接セルの境目に背景色の細い線が出ないよう、0.5ptだけ重ねて描く
+        let halfCellPt = CGFloat(halfCellMeters) * pointsPerMeter
+        let overlap = (halfCellPt + 0.5) / halfCellPt
+        let halfEdgeX = CGPoint(x: CGFloat(halfCellMeters * right.x) * pointsPerMeter * overlap,
+                                 y: -CGFloat(halfCellMeters * forward.x) * pointsPerMeter * overlap)
+        let halfEdgeZ = CGPoint(x: CGFloat(halfCellMeters * right.y) * pointsPerMeter * overlap,
+                                 y: -CGFloat(halfCellMeters * forward.y) * pointsPerMeter * overlap)
 
         for gz in gridRange.minZ...gridRange.maxZ {
             for gx in gridRange.minX...gridRange.maxX {
@@ -161,12 +177,16 @@ final class OGMDebugMapView: UIView {
 
                 let cellCenterWorld = simd_float2((Float(coord.x) + 0.5) * cellSize,
                                                    (Float(coord.z) + 0.5) * cellSize)
-                let screenPoint = worldToScreen(cellCenterWorld, anchor: anchor, pose: pose)
-                guard visibleRect.contains(screenPoint) else { continue }
+                let c = worldToScreen(cellCenterWorld, anchor: anchor, pose: pose)
+                guard visibleRect.contains(c) else { continue }
 
                 ctx.setFillColor(color(for: coord).cgColor)
-                ctx.fill(CGRect(x: screenPoint.x - halfCellPt, y: screenPoint.y - halfCellPt,
-                                 width: halfCellPt * 2, height: halfCellPt * 2))
+                ctx.move(to: CGPoint(x: c.x + halfEdgeX.x + halfEdgeZ.x, y: c.y + halfEdgeX.y + halfEdgeZ.y))
+                ctx.addLine(to: CGPoint(x: c.x + halfEdgeX.x - halfEdgeZ.x, y: c.y + halfEdgeX.y - halfEdgeZ.y))
+                ctx.addLine(to: CGPoint(x: c.x - halfEdgeX.x - halfEdgeZ.x, y: c.y - halfEdgeX.y - halfEdgeZ.y))
+                ctx.addLine(to: CGPoint(x: c.x - halfEdgeX.x + halfEdgeZ.x, y: c.y - halfEdgeX.y + halfEdgeZ.y))
+                ctx.closePath()
+                ctx.fillPath()
             }
         }
 
