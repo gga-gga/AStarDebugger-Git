@@ -13,6 +13,8 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
     private let mapView = OGMDebugMapView()
     private let statsLabel = UILabel()
 
+    private let exportButton = UIButton(type: .system)
+
     private let ogmEngine = OGMNavigationEngine()
     private var lastOGMUpdateTime: TimeInterval = 0
     private var lastMapRefreshTime: TimeInterval = 0
@@ -28,6 +30,7 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
         setupSceneView()
         setupMapView()
         setupStatsLabel()
+        setupExportButton()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -80,6 +83,48 @@ final class OGMDebugViewController: UIViewController, ARSCNViewDelegate {
             statsLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             statsLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8)
         ])
+    }
+
+    /// 観測済みOGM全域を画像として書き出し、共有シートで取り出せるようにするボタン。
+    private func setupExportButton() {
+        var config = UIButton.Configuration.filled()
+        config.title = "OGMを書き出し"
+        config.baseBackgroundColor = UIColor.black.withAlphaComponent(0.6)
+        config.baseForegroundColor = .white
+        config.cornerStyle = .medium
+        exportButton.configuration = config
+        exportButton.addTarget(self, action: #selector(exportOGMImage), for: .touchUpInside)
+        exportButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(exportButton)
+        NSLayoutConstraint.activate([
+            exportButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            exportButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8)
+        ])
+    }
+
+    @objc private func exportOGMImage() {
+        let selfPosition = sceneView.session.currentFrame.map { frame -> simd_float3 in
+            let m = frame.camera.transform
+            return simd_float3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
+        }
+
+        guard let image = OGMImageExporter.renderFullMap(cells: ogmEngine.grid.cells,
+                                                          cellSize: ogmEngine.grid.cellSize,
+                                                          path: ogmEngine.currentPath,
+                                                          selfPosition: selfPosition) else {
+            let alert = UIAlertController(title: "書き出し不可", message: "まだ観測されたセルがありません",
+                                          preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+            return
+        }
+
+        let activityController = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        if let popover = activityController.popoverPresentationController {
+            popover.sourceView = exportButton
+            popover.sourceRect = exportButton.bounds
+        }
+        present(activityController, animated: true)
     }
 
     // MARK: - ARSCNViewDelegate
